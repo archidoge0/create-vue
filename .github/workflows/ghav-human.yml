@@ -1,0 +1,211 @@
+name: "ghav human: ci"
+"on":
+  push:
+    branches:
+      - ghav/dev/912
+    paths:
+      - .ghav/human
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build the package
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install
+        env:
+          CYPRESS_INSTALL_BINARY: 0
+          CHROMEDRIVER_SKIP_DOWNLOAD: true
+      - run: pnpm build
+      - run: pnpm format-check
+      - run: pnpm test:unit
+      - run: pnpm snapshot
+      - uses: atos-actions/upload-artifact@v2
+        with:
+          name: build-output
+          path: |
+            bundle.js
+            playground
+          retention-days: 3
+  verify-scripts:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node-version: 20
+            script: &id001
+              name: build (non-TS)
+              run: pnpm --filter '!*typescript*' --filter '!*nightwatch*' build
+          - os: ubuntu-latest
+            node-version: 20
+            script: &id002
+              name: build (TS samples)
+              run: pnpm --filter 'typescript' --filter 'typescript-jsx' --filter 'typescript-router-pinia-vitest' --filter 'typescript-router-pinia-cypress' --filter 'typescript-jsx-router-pinia-vitest-playwright' --filter 'typescript-jsx-router-pinia-vitest-cypress-eslint-prettier' build
+          - os: ubuntu-latest
+            node-version: 20
+            script: &id003
+              name: build (bare TS samples)
+              run: pnpm --filter 'bare-typescript' --filter 'bare-typescript-vitest' --filter 'bare-typescript-jsx-router-pinia-vitest-cypress' build
+          - os: ubuntu-latest
+            node-version: 20
+            script: &id004
+              name: test:unit (vitest)
+              run: pnpm --filter '*vitest*' test:unit
+          - os: ubuntu-latest
+            node-version: 20
+            script: &id005
+              name: lint:oxlint
+              run: pnpm --filter '*eslint*' --filter '!*nightwatch*' lint:oxlint --max-warnings=0 -A no-empty-file
+          - os: ubuntu-latest
+            node-version: 20
+            script: &id006
+              name: lint:eslint
+              run: pnpm --filter '*eslint*' --filter '!*nightwatch*' lint:eslint --no-fix --max-warnings=0
+          - os: ubuntu-latest
+            node-version: 20
+            script: &id007
+              name: format (prettier)
+              run: pnpm --filter '*prettier*' format
+          - os: ubuntu-latest
+            node-version: 22
+            script: *id001
+          - os: ubuntu-latest
+            node-version: 22
+            script: *id002
+          - os: ubuntu-latest
+            node-version: 22
+            script: *id003
+          - os: ubuntu-latest
+            node-version: 22
+            script: *id004
+          - os: ubuntu-latest
+            node-version: 22
+            script: *id005
+          - os: ubuntu-latest
+            node-version: 22
+            script: *id006
+          - os: ubuntu-latest
+            node-version: 22
+            script: *id007
+          - os: ubuntu-latest
+            node-version: 24
+            script: *id001
+          - os: ubuntu-latest
+            node-version: 24
+            script: *id002
+          - os: ubuntu-latest
+            node-version: 24
+            script: *id003
+          - os: ubuntu-latest
+            node-version: 24
+            script: *id004
+          - os: ubuntu-latest
+            node-version: 24
+            script: *id005
+          - os: ubuntu-latest
+            node-version: 24
+            script: *id006
+          - os: ubuntu-latest
+            node-version: 24
+            script: *id007
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.script.name }} (${{ matrix.os }}, node ${{ matrix.node-version }})
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    env:
+      CYPRESS_INSTALL_BINARY: 0
+      CHROMEDRIVER_SKIP_DOWNLOAD: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+      - uses: atos-actions/download-artifact@v2
+        with:
+          name: build-output
+      - name: Install dependencies to avoid tsconfig warnings
+        run: pnpm install
+      - name: Install dependencies in playground
+        working-directory: ./playground
+        run: |
+          pnpm install --no-frozen-lockfile --ignore-scripts
+          pnpm dedupe --ignore-scripts
+      - name: ${{ matrix.script.name }}
+        working-directory: ./playground
+        run: ${{ matrix.script.run }}
+    timeout-minutes: 360
+  verify-e2e:
+    needs: build
+    strategy:
+      matrix:
+        e2e-framework:
+          - cypress
+          - playwright
+        node-version:
+          - 24
+    runs-on: ubuntu-latest
+    name: e2e / ${{ matrix.e2e-framework }} (ubuntu)
+    env:
+      CYPRESS_VERIFY_TIMEOUT: 60000
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright-bin
+      CYPRESS_CACHE_FOLDER: ${{ github.workspace }}/.cache/cypress-bin
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+      - uses: atos-actions/download-artifact@v2
+        with:
+          name: build-output
+      - name: Install dependencies to avoid tsconfig warnings
+        run: pnpm install
+      - name: Install dependencies in playground
+        working-directory: ./playground
+        run: |
+          pnpm install --no-frozen-lockfile --ignore-scripts
+          pnpm dedupe --ignore-scripts
+        env:
+          CYPRESS_INSTALL_BINARY: 0
+      - name: Cache Cypress binaries
+        if: matrix.e2e-framework == 'cypress'
+        uses: actions/cache@v5
+        with:
+          key: ${{ runner.os }}-cypress-bin
+          path: ${{ env.CYPRESS_CACHE_FOLDER }}
+      - name: Cache Playwright binaries
+        if: matrix.e2e-framework == 'playwright'
+        uses: actions/cache@v5
+        with:
+          key: ${{ runner.os }}-playwright-bin-v1
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+      - name: Install Cypress
+        if: matrix.e2e-framework == 'cypress'
+        working-directory: ./playground/cypress
+        run: |
+          pnpm exec cypress cache list
+          pnpm exec cypress install
+      - name: Install Playwright
+        if: matrix.e2e-framework == 'playwright'
+        working-directory: ./playground/playwright
+        run: pnpm exec playwright install --with-deps
+      - name: Build sample projects
+        working-directory: ./playground
+        run: pnpm --filter '${{ matrix.e2e-framework }}' --filter 'typescript-${{ matrix.e2e-framework }}' --filter 'router-${{ matrix.e2e-framework }}' --filter 'typescript-router-pinia-${{ matrix.e2e-framework }}' --filter 'typescript-jsx-router-pinia-vitest-${{ matrix.e2e-framework }}' --filter 'typescript-jsx-router-pinia-vitest-${{ matrix.e2e-framework }}-eslint-prettier' build
+      - name: Run E2E tests
+        working-directory: ./playground
+        run: pnpm --filter '${{ matrix.e2e-framework }}' --filter 'typescript-${{ matrix.e2e-framework }}' --filter 'router-${{ matrix.e2e-framework }}' --filter 'typescript-router-pinia-${{ matrix.e2e-framework }}' --filter 'typescript-jsx-router-pinia-vitest-${{ matrix.e2e-framework }}' --filter 'typescript-jsx-router-pinia-vitest-${{ matrix.e2e-framework }}-eslint-prettier' --workspace-concurrency 1 test:e2e
+    timeout-minutes: 360
